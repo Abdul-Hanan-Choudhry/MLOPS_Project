@@ -442,24 +442,86 @@ def version_data_with_dvc(**context):
 
 def trigger_model_training(**context):
     """
-    Task: Trigger model training pipeline.
+    Task: Trigger model training pipeline with MLflow tracking.
     
-    Calls the training script with the processed data.
+    Trains multiple ML models for Bitcoin price prediction:
+    - Ridge, Lasso, ElasticNet regression
+    - Random Forest, Gradient Boosting
+    - XGBoost, LightGBM (if installed)
+    
+    Logs all hyperparameters, metrics (RMSE, MAE, R², MAPE), and model artifacts to DagsHub MLflow.
     """
     sys.path.insert(0, "/opt/airflow")
+    
+    from src.models.train import train_model
+    from src.models.registry import ModelRegistry
+    import os
     
     processed_filepath = context["ti"].xcom_pull(
         key="processed_filepath",
         task_ids="transform_features"
     )
     
-    print(f"Triggering model training with data: {processed_filepath}")
+    print(f"\n{'='*60}")
+    print(f"PHASE 2: MODEL TRAINING WITH MLFLOW TRACKING")
+    print(f"{'='*60}")
+    print(f"Data path: {processed_filepath}")
     
-    # Import and run training (will be implemented in Phase 2)
-    # from src.models.train import train_model
-    # train_model(data_path=processed_filepath)
+    # Train all available models
+    results = train_model(
+        data_path=processed_filepath,
+        model_types=None,  # Train all available models
+        experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "crypto-price-prediction"),
+        save_best=True
+    )
     
-    print(f"✓ Model training triggered")
+    # Find the best model
+    best_model_type = None
+    best_rmse = float('inf')
+    best_run_id = None
+    
+    for model_type, result in results.items():
+        if model_type == "best_model_path":
+            continue
+        if "metrics" in result and result["metrics"]["rmse"] < best_rmse:
+            best_rmse = result["metrics"]["rmse"]
+            best_model_type = model_type
+            best_run_id = result.get("run_id")
+    
+    # Store training results in XCom
+    context["ti"].xcom_push(key="best_model_type", value=best_model_type)
+    context["ti"].xcom_push(key="best_rmse", value=best_rmse)
+    context["ti"].xcom_push(key="best_run_id", value=best_run_id)
+    context["ti"].xcom_push(key="best_model_path", value=results.get("best_model_path"))
+    
+    # Register best model to MLflow Model Registry
+    if best_run_id:
+        try:
+            registry = ModelRegistry()
+            version = registry.register_model(
+                run_id=best_run_id,
+                model_name=f"crypto-{best_model_type}",
+                description=f"Bitcoin price prediction model - {best_model_type}",
+                tags={
+                    "data_source": "coingecko",
+                    "target": "price_1h",
+                    "dag_run": context["run_id"]
+                }
+            )
+            
+            # Promote to Staging for validation
+            registry.promote_to_staging(f"crypto-{best_model_type}", version)
+            
+            print(f"\n✓ Registered model crypto-{best_model_type} v{version} (Staging)")
+            context["ti"].xcom_push(key="registered_version", value=version)
+            
+        except Exception as e:
+            print(f"⚠ Model registration failed: {e}")
+    
+    print(f"\n{'='*60}")
+    print(f"TRAINING COMPLETE")
+    print(f"Best Model: {best_model_type} (RMSE: {best_rmse:.4f})")
+    print(f"{'='*60}\n")
     
     return True
 

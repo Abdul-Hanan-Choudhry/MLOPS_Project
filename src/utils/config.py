@@ -17,9 +17,10 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 REPORTS_DIR = DATA_DIR / "reports"
+MODELS_DIR = PROJECT_ROOT / "models"
 
 # Ensure directories exist
-for dir_path in [RAW_DATA_DIR, PROCESSED_DATA_DIR, REPORTS_DIR]:
+for dir_path in [RAW_DATA_DIR, PROCESSED_DATA_DIR, REPORTS_DIR, MODELS_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
 
