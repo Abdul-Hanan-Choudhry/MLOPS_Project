@@ -147,16 +147,57 @@ class DriftDetector:
     Uses a simple Z-score based approach as a drift proxy.
     """
     
-    # Expected feature ranges based on crypto market data
+    # Expected feature ranges based on crypto market data (Bitcoin)
     EXPECTED_RANGES = {
+        # Price features
         'price': (80000, 120000),
+        'price_lag_1h': (80000, 120000),
+        'price_lag_3h': (80000, 120000),
+        'price_lag_6h': (80000, 120000),
+        'price_lag_12h': (80000, 120000),
+        'price_lag_24h': (80000, 120000),
+        'price_rolling_mean_6h': (80000, 120000),
+        'price_rolling_mean_12h': (80000, 120000),
+        'price_rolling_mean_24h': (80000, 120000),
+        'price_rolling_min_6h': (75000, 115000),
+        'price_rolling_min_12h': (75000, 115000),
+        'price_rolling_min_24h': (75000, 115000),
+        'price_rolling_max_6h': (85000, 125000),
+        'price_rolling_max_12h': (85000, 125000),
+        'price_rolling_max_24h': (85000, 125000),
+        'price_rolling_std_6h': (0, 2000),
+        'price_rolling_std_12h': (0, 3000),
+        'price_rolling_std_24h': (0, 4000),
+        
+        # Volume features
         'volume': (3e10, 7e10),
+        'volume_lag_1h': (3e10, 7e10),
+        'volume_lag_3h': (3e10, 7e10),
+        'volume_lag_6h': (3e10, 7e10),
+        'volume_lag_12h': (3e10, 7e10),
+        'volume_lag_24h': (3e10, 7e10),
+        'volume_rolling_mean_6h': (3e10, 7e10),
+        'volume_rolling_mean_12h': (3e10, 7e10),
+        'volume_rolling_mean_24h': (3e10, 7e10),
+        
+        # Market cap
         'market_cap': (1.5e12, 2.5e12),
-        'price_lag_1': (80000, 120000),
-        'price_lag_3': (80000, 120000),
-        'price_rolling_mean_6': (80000, 120000),
-        'price_rolling_std_6': (0, 5000),
+        'market_cap_rolling_mean_6h': (1.5e12, 2.5e12),
+        'market_cap_rolling_mean_12h': (1.5e12, 2.5e12),
+        'market_cap_rolling_mean_24h': (1.5e12, 2.5e12),
+        
+        # Volatility
+        'volatility_6h': (0, 0.05),
+        'volatility_12h': (0, 0.07),
+        'volatility_24h': (0, 0.1),
+        
+        # Momentum
+        'momentum_12h': (-0.1, 0.1),
+        'momentum_24h': (-0.15, 0.15),
     }
+    
+    # Features to track for drift (subset of important ones)
+    KEY_FEATURES = ['price', 'volume', 'market_cap', 'volatility_24h', 'momentum_24h']
     
     # Running statistics for adaptive drift detection
     _feature_stats: Dict[str, Dict] = {}
