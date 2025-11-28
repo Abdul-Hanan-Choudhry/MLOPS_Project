@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY src/ /app/src/
 COPY models/ /app/models/
+COPY requirements-api.txt /app/
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser && \
