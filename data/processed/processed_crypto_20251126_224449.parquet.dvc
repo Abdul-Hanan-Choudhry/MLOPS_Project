@@ -1,0 +1,5 @@
+outs:
+- md5: a45a1d2792ed7b7386bd733b8a91c2dc
+  size: 390822
+  hash: md5
+  path: processed_crypto_20251126_224449.parquet
