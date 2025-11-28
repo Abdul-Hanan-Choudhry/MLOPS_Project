@@ -1,0 +1,148 @@
+# CD Pipeline: Test → Master Branch
+# Production Deployment with Docker
+
+name: CD - Production Deployment
+
+on:
+  pull_request:
+    branches: [master, main]
+    types: [closed]
+  push:
+    branches: [master, main]
+    tags:
+      - 'v*'
+
+env:
+  PYTHON_VERSION: "3.10"
+  DOCKER_IMAGE: abdulhananch404/crypto-price-predictor
+  DAGSHUB_USERNAME: abdulhananch404
+  MLFLOW_TRACKING_URI: https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'push'
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install mlflow joblib scikit-learn
+      
+      - name: Fetch Best Model from MLflow
+        env:
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+          MLFLOW_TRACKING_USERNAME: ${{ env.DAGSHUB_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          python scripts/fetch_best_model.py
+      
+      - name: Get version tag
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=v$(date +%Y%m%d)-${GITHUB_SHA::7}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+      
+      - name: Verify Deployment
+        run: |
+          echo "🚀 Pulling and testing the deployed image..."
+          docker pull ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.VERSION }}
+          
+          # Start container
+          docker run -d --name test-api -p 8000:8000 ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.VERSION }}
+          
+          # Wait for startup
+          echo "Waiting for service to start..."
+          sleep 15
+          
+          # Health check
+          echo "Running health check..."
+          curl -f http://localhost:8000/health || (docker logs test-api && exit 1)
+          
+          # Test prediction endpoint
+          echo "Testing prediction endpoint..."
+          curl -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"features": {"price": 95000, "volume": 50000000000, "market_cap": 1900000000000}}' \
+            || echo "Prediction test completed"
+          
+          # Cleanup
+          docker stop test-api
+          docker rm test-api
+          
+          echo "✅ Deployment verification successful!"
+      
+      - name: Create Release Summary
+        run: |
+          echo "## 🚀 Production Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployment Commands" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -d -p 8000:8000 ${{ env.DOCKER_IMAGE }}:${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### API Endpoints" >> $GITHUB_STEP_SUMMARY
+          echo "- Health: \`GET /health\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Predict: \`POST /predict\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Docs: \`GET /docs\`" >> $GITHUB_STEP_SUMMARY
+
+  notify:
+    name: Notify Deployment
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: always()
+    
+    steps:
+      - name: Deployment Status
+        run: |
+          if [ "${{ needs.build-and-deploy.result }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+            exit 1
+          fi

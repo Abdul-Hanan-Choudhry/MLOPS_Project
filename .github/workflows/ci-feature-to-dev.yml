@@ -1,0 +1,150 @@
+# CI Pipeline: Feature → Dev Branch
+# Runs code quality checks and unit tests
+
+name: CI - Code Quality & Tests
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  lint:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort pylint
+          pip install -r requirements.txt
+      
+      - name: Run Black (Code Formatting Check)
+        run: |
+          black --check --diff src/ tests/ scripts/ || echo "::warning::Code formatting issues found"
+        continue-on-error: true
+      
+      - name: Run isort (Import Sorting Check)
+        run: |
+          isort --check-only --diff src/ tests/ scripts/ || echo "::warning::Import sorting issues found"
+        continue-on-error: true
+      
+      - name: Run Flake8 (Linting)
+        run: |
+          flake8 src/ tests/ --max-line-length=120 --ignore=E501,W503,E203 --count --statistics
+        continue-on-error: true
+      
+      - name: Run Pylint (Code Analysis)
+        run: |
+          pylint src/ --max-line-length=120 --disable=C0114,C0115,C0116,R0903,W0511 --fail-under=6.0 || echo "::warning::Pylint score below threshold"
+        continue-on-error: true
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-xdist
+          pip install -r requirements.txt
+      
+      - name: Create test data directory
+        run: |
+          mkdir -p data/processed data/raw models
+      
+      - name: Run Unit Tests
+        run: |
+          pytest tests/ -v --tb=short --cov=src --cov-report=xml --cov-report=term-missing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+      
+      - name: Upload Coverage Report
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install security tools
+        run: |
+          pip install bandit safety
+      
+      - name: Run Bandit (Security Linting)
+        run: |
+          bandit -r src/ -ll --skip B101 || echo "::warning::Security issues found"
+        continue-on-error: true
+      
+      - name: Check Dependencies for Vulnerabilities
+        run: |
+          safety check -r requirements.txt || echo "::warning::Vulnerable dependencies found"
+        continue-on-error: true
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [lint, test, security]
+    if: always()
+    
+    steps:
+      - name: Check results
+        run: |
+          echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Linting | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security | ${{ needs.security.result }} |" >> $GITHUB_STEP_SUMMARY
