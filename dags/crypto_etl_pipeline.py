@@ -451,11 +451,17 @@ def trigger_model_training(**context):
     
     Logs all hyperparameters, metrics (RMSE, MAE, R², MAPE), and model artifacts to DagsHub MLflow.
     """
-    sys.path.insert(0, "/opt/airflow")
-    
-    from src.models.train import train_model
-    from src.models.registry import ModelRegistry
     import os
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import Ridge, Lasso, ElasticNet
+    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+    import mlflow
+    import joblib
     
     processed_filepath = context["ti"].xcom_pull(
         key="processed_filepath",
@@ -467,61 +473,124 @@ def trigger_model_training(**context):
     print(f"{'='*60}")
     print(f"Data path: {processed_filepath}")
     
-    # Train all available models
-    results = train_model(
-        data_path=processed_filepath,
-        model_types=None,  # Train all available models
-        experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "crypto-price-prediction"),
-        save_best=True
-    )
+    # Setup MLflow with DagsHub
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "")
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "crypto-price-prediction")
     
-    # Find the best model
-    best_model_type = None
-    best_rmse = float('inf')
-    best_run_id = None
+    print(f"MLflow URI: {tracking_uri}")
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(experiment_name)
     
-    for model_type, result in results.items():
-        if model_type == "best_model_path":
-            continue
-        if "metrics" in result and result["metrics"]["rmse"] < best_rmse:
-            best_rmse = result["metrics"]["rmse"]
-            best_model_type = model_type
-            best_run_id = result.get("run_id")
+    # Load data
+    df = pd.read_parquet(processed_filepath)
+    print(f"Loaded {len(df)} rows, {len(df.columns)} columns")
     
-    # Store training results in XCom
-    context["ti"].xcom_push(key="best_model_type", value=best_model_type)
-    context["ti"].xcom_push(key="best_rmse", value=best_rmse)
-    context["ti"].xcom_push(key="best_run_id", value=best_run_id)
-    context["ti"].xcom_push(key="best_model_path", value=results.get("best_model_path"))
+    # Prepare features
+    if 'target_price_1h' not in df.columns:
+        df['target_price_1h'] = df['price'].shift(-1)
+    df = df.dropna(subset=['target_price_1h'])
     
-    # Register best model to MLflow Model Registry
-    if best_run_id:
+    exclude_cols = ['timestamp', 'target_price_1h', 'extraction_time']
+    feature_cols = [col for col in df.columns if col not in exclude_cols 
+                    and df[col].dtype in ['float64', 'int64', 'float32', 'int32']]
+    df = df.dropna(subset=feature_cols)
+    
+    X = df[feature_cols]
+    y = df['target_price_1h']
+    
+    # Split and scale
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    print(f"Train: {len(X_train)}, Test: {len(X_test)}, Features: {len(feature_cols)}")
+    
+    # Define models
+    models = {
+        'ridge': Ridge(alpha=1.0),
+        'lasso': Lasso(alpha=0.1),
+        'elasticnet': ElasticNet(alpha=0.1, l1_ratio=0.5),
+        'random_forest': RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1),
+        'gradient_boosting': GradientBoostingRegressor(n_estimators=100, max_depth=5, random_state=42),
+    }
+    
+    # Try to add XGBoost and LightGBM
+    try:
+        from xgboost import XGBRegressor
+        models['xgboost'] = XGBRegressor(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1, verbosity=0)
+        print("✅ XGBoost available")
+    except ImportError:
+        print("⚠️ XGBoost not available")
+    
+    try:
+        from lightgbm import LGBMRegressor
+        models['lightgbm'] = LGBMRegressor(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1, verbose=-1)
+        print("✅ LightGBM available")
+    except ImportError:
+        print("⚠️ LightGBM not available")
+    
+    print(f"\n🚀 Training {len(models)} models...")
+    
+    def calculate_mape(y_true, y_pred):
+        y_true, y_pred = np.array(y_true), np.array(y_pred)
+        non_zero_mask = y_true != 0
+        return np.mean(np.abs((y_true[non_zero_mask] - y_pred[non_zero_mask]) / y_true[non_zero_mask])) * 100
+    
+    results = {}
+    for model_name, model in models.items():
         try:
-            registry = ModelRegistry()
-            version = registry.register_model(
-                run_id=best_run_id,
-                model_name=f"crypto-{best_model_type}",
-                description=f"Bitcoin price prediction model - {best_model_type}",
-                tags={
-                    "data_source": "coingecko",
-                    "target": "price_1h",
-                    "dag_run": context["run_id"]
-                }
-            )
+            run_name = f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
-            # Promote to Staging for validation
-            registry.promote_to_staging(f"crypto-{best_model_type}", version)
-            
-            print(f"\n✓ Registered model crypto-{best_model_type} v{version} (Staging)")
-            context["ti"].xcom_push(key="registered_version", value=version)
-            
+            with mlflow.start_run(run_name=run_name):
+                mlflow.log_param("model_type", model_name)
+                mlflow.log_param("n_features", len(feature_cols))
+                mlflow.log_param("n_train_samples", len(X_train))
+                
+                # Train
+                model.fit(X_train_scaled, y_train)
+                y_pred = model.predict(X_test_scaled)
+                
+                # Metrics
+                rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+                mae = float(mean_absolute_error(y_test, y_pred))
+                r2 = float(r2_score(y_test, y_pred))
+                mape = float(calculate_mape(y_test, y_pred))
+                
+                mlflow.log_metric("rmse", rmse)
+                mlflow.log_metric("mae", mae)
+                mlflow.log_metric("r2", r2)
+                mlflow.log_metric("mape", mape)
+                
+                mlflow.set_tag("model_type", model_name)
+                mlflow.set_tag("stage", "training")
+                
+                results[model_name] = {'model': model, 'rmse': rmse, 'mae': mae, 'r2': r2, 'mape': mape}
+                print(f"  ✅ {model_name}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.4f}, MAPE={mape:.2f}%")
+                
         except Exception as e:
-            print(f"⚠ Model registration failed: {e}")
+            print(f"  ❌ {model_name}: {e}")
     
-    print(f"\n{'='*60}")
-    print(f"TRAINING COMPLETE")
-    print(f"Best Model: {best_model_type} (RMSE: {best_rmse:.4f})")
-    print(f"{'='*60}\n")
+    # Find best model
+    if results:
+        best_model_name = min(results, key=lambda x: results[x]['rmse'])
+        best_result = results[best_model_name]
+        
+        # Save locally
+        os.makedirs('/opt/airflow/models', exist_ok=True)
+        joblib.dump(best_result['model'], '/opt/airflow/models/best_model.pkl')
+        joblib.dump(scaler, '/opt/airflow/models/scaler.pkl')
+        
+        context["ti"].xcom_push(key="best_model_type", value=best_model_name)
+        context["ti"].xcom_push(key="best_rmse", value=best_result['rmse'])
+        
+        print(f"\n{'='*60}")
+        print(f"🏆 BEST MODEL: {best_model_name}")
+        print(f"   RMSE: {best_result['rmse']:.4f}")
+        print(f"   R²: {best_result['r2']:.4f}")
+        print(f"{'='*60}\n")
+    else:
+        print("❌ No models trained successfully!")
     
     return True
 

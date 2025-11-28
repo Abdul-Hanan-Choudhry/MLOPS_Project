@@ -12,11 +12,13 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    # MLflow configuration
-    MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
-    MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-crypto-price-prediction}
-    DAGSHUB_USERNAME: ${DAGSHUB_USERNAME:-}
-    DAGSHUB_TOKEN: ${DAGSHUB_TOKEN:-}
+    # MLflow configuration - DagsHub integration
+    MLFLOW_TRACKING_URI: https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow
+    MLFLOW_TRACKING_USERNAME: abdulhananch404
+    MLFLOW_TRACKING_PASSWORD: 2f6456ef4e847038657172406b991bc3483f6c93
+    MLFLOW_EXPERIMENT_NAME: crypto-price-prediction
+    DAGSHUB_USERNAME: abdulhananch404
+    DAGSHUB_TOKEN: 2f6456ef4e847038657172406b991bc3483f6c93
     # CoinGecko configuration
     COIN_ID: ${COIN_ID:-bitcoin}
     VS_CURRENCY: ${VS_CURRENCY:-usd}
