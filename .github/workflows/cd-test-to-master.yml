@@ -7,10 +7,12 @@ on:
   pull_request:
     branches: [master, main]
     types: [closed]
-  push:
-    branches: [master, main]
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag'
+        required: false
+        default: 'latest'
 
 env:
   PYTHON_VERSION: "3.10"
