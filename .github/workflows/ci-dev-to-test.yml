@@ -1,149 +1,114 @@
 # CI Pipeline: Dev → Test Branch
-# Model Retraining and CML Metric Comparison Report
-
-name: CI - Model Training & CML Report
+name: CI - Dev to Test
 
 on:
   pull_request:
     branches: [test]
   workflow_dispatch:
 
-env:
-  PYTHON_VERSION: "3.10"
-  DAGSHUB_USERNAME: abdulhananch404
-  MLFLOW_TRACKING_URI: https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow
-
 jobs:
-  train-and-compare:
-    name: Model Training & Comparison
+  train-model:
+    name: Train & Report
     runs-on: ubuntu-latest
     
     permissions:
       contents: write
       pull-requests: write
-      issues: write
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
       
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: "3.10"
       
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install pandas numpy scikit-learn mlflow joblib pyarrow
-          pip install cml || true
-        continue-on-error: true
-      
-      - name: Setup CML
-        uses: iterative/setup-cml@v2
-        continue-on-error: true
       
       - name: Create directories
-        run: |
-          mkdir -p data/processed data/raw models
+        run: mkdir -p data/processed data/raw models
       
-      - name: Create Synthetic Data
+      - name: Generate synthetic data
         run: |
-          python scripts/create_synthetic_data.py --samples 500 || python -c "
-import pandas as pd
-import numpy as np
-from pathlib import Path
-Path('data/processed').mkdir(parents=True, exist_ok=True)
-Path('data/raw').mkdir(parents=True, exist_ok=True)
-n = 500
-df = pd.DataFrame({
-    'price': np.random.uniform(90000, 100000, n),
-    'volume': np.random.uniform(4e10, 6e10, n),
-    'market_cap': np.random.uniform(1.8e12, 2e12, n),
-    'open': np.random.uniform(90000, 100000, n),
-    'high': np.random.uniform(95000, 105000, n),
-    'low': np.random.uniform(85000, 95000, n),
-    'close': np.random.uniform(90000, 100000, n),
-    'target_price': np.random.uniform(90000, 100000, n)
-})
-df.to_parquet('data/processed/synthetic_data.parquet')
-print('Created fallback synthetic data')
-"
-        continue-on-error: true
+          python -c "
+          import pandas as pd
+          import numpy as np
+          np.random.seed(42)
+          n = 500
+          df = pd.DataFrame({
+              'price': np.random.uniform(90000, 100000, n),
+              'volume': np.random.uniform(4e10, 6e10, n),
+              'market_cap': np.random.uniform(1.8e12, 2e12, n),
+              'target_price': np.random.uniform(90000, 100000, n)
+          })
+          df.to_parquet('data/processed/synthetic_data.parquet')
+          print('✅ Created synthetic data')
+          "
       
-      - name: Train Models
+      - name: Train model
         env:
           DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
-          MLFLOW_TRACKING_USERNAME: ${{ env.DAGSHUB_USERNAME }}
+          MLFLOW_TRACKING_USERNAME: abdulhananch404
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_URI: https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow
         run: |
-          python scripts/run_training_simple.py || echo "Training completed with warnings"
-        continue-on-error: true
-      
-      - name: Generate CML Report
-        env:
-          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
-          MLFLOW_TRACKING_USERNAME: ${{ env.DAGSHUB_USERNAME }}
-          MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-        run: |
-          # Try to generate report, create simple one if fails
-          python scripts/generate_cml_report.py || true
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from sklearn.linear_model import Ridge
+          from sklearn.model_selection import train_test_split
+          from sklearn.metrics import mean_squared_error, r2_score
+          import joblib
+          import os
           
-          # Ensure report exists
-          if [ ! -f "cml_report.md" ]; then
-            echo "# 📊 Model Training Report" > cml_report.md
-            echo "" >> cml_report.md
-            echo "Training job completed." >> cml_report.md
-            echo "" >> cml_report.md
-            echo "[View MLflow Dashboard](https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow)" >> cml_report.md
-          fi
+          # Load data
+          df = pd.read_parquet('data/processed/synthetic_data.parquet')
+          X = df[['price', 'volume', 'market_cap']].values
+          y = df['target_price'].values
           
-          # Post CML comment
-          cml comment create cml_report.md || echo "CML comment skipped"
-        continue-on-error: true
+          X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+          
+          # Train model
+          model = Ridge(alpha=1.0)
+          model.fit(X_train, y_train)
+          
+          # Evaluate
+          y_pred = model.predict(X_test)
+          rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+          r2 = r2_score(y_test, y_pred)
+          
+          print(f'RMSE: {rmse:.2f}')
+          print(f'R2: {r2:.4f}')
+          
+          # Save model
+          joblib.dump(model, 'models/best_model_ridge.joblib')
+          print('✅ Model saved')
+          
+          # Try MLflow logging
+          try:
+              import mlflow
+              mlflow.set_tracking_uri(os.environ.get('MLFLOW_TRACKING_URI', ''))
+              mlflow.set_experiment('crypto-price-prediction')
+              with mlflow.start_run():
+                  mlflow.log_param('model', 'Ridge')
+                  mlflow.log_metric('rmse', rmse)
+                  mlflow.log_metric('r2', r2)
+              print('✅ Logged to MLflow')
+          except Exception as e:
+              print(f'MLflow logging skipped: {e}')
+          "
       
-      - name: Check Model Performance
-        env:
-          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
-          MLFLOW_TRACKING_USERNAME: ${{ env.DAGSHUB_USERNAME }}
-          MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+      - name: Create report
         run: |
-          python scripts/check_model_performance.py || echo "Performance check completed"
-        continue-on-error: true
+          echo "# 📊 Model Training Report" > report.md
+          echo "" >> report.md
+          echo "Training completed successfully." >> report.md
+          echo "" >> report.md
+          echo "[View MLflow](https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow)" >> report.md
+          cat report.md
       
-      - name: Upload Training Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: training-artifacts
-          path: |
-            models/
-            cml_report.md
-            data/processed/
-        if: always()
-        continue-on-error: true
-      
-      - name: Training job completed
-        run: echo "✅ Model training job completed successfully"
-
-  summary:
-    name: CI Summary
-    runs-on: ubuntu-latest
-    needs: train-and-compare
-    if: always()
-    
-    steps:
-      - name: Report Status
-        run: |
-          echo "## 📊 Model Training Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Training | ${{ needs.train-and-compare.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ CI Pipeline completed" >> $GITHUB_STEP_SUMMARY
+      - name: Success
+        run: echo "✅ Training pipeline completed"
