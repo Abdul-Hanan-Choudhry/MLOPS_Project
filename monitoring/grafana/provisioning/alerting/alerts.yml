@@ -1,0 +1,172 @@
+apiVersion: 1
+
+# Grafana Alert Rules for Crypto Price Prediction
+# These rules trigger notifications when thresholds are exceeded
+
+groups:
+  - orgId: 1
+    name: API Performance Alerts
+    folder: ML Monitoring
+    interval: 1m
+    rules:
+      - uid: high-latency-alert
+        title: High Inference Latency
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: histogram_quantile(0.95, rate(prediction_request_latency_seconds_bucket{endpoint="/predict"}[5m]))
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.5
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+              refId: C
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: "High API latency detected - 95th percentile > 500ms"
+          description: "The prediction API latency has exceeded the 500ms threshold"
+        labels:
+          severity: warning
+          
+      - uid: data-drift-alert
+        title: Data Drift Detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: data_drift_detected
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.5
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+              refId: C
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Data drift detected in input features"
+          description: "Input data distribution has shifted significantly from expected ranges"
+        labels:
+          severity: warning
+
+      - uid: high-ood-ratio-alert
+        title: High Out-of-Distribution Ratio
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: avg(data_drift_ood_ratio)
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.15
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+              refId: C
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "High ratio of out-of-distribution feature values"
+          description: "More than 15% of incoming feature values are outside expected ranges"
+        labels:
+          severity: warning
+
+# Contact points for alert notifications
+contactPoints:
+  - orgId: 1
+    name: default-email
+    receivers:
+      - uid: email-receiver
+        type: email
+        settings:
+          addresses: admin@example.com
+          singleEmail: true
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: file-logger
+    receivers:
+      - uid: file-receiver
+        type: webhook
+        settings:
+          url: http://api:8000/alerts/webhook
+          httpMethod: POST
+        disableResolveMessage: false
+
+# Notification policies
+policies:
+  - orgId: 1
+    receiver: file-logger
+    group_by:
+      - alertname
+      - severity
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

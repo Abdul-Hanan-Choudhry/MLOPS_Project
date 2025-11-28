@@ -5,14 +5,17 @@ This module provides a REST API for:
 - Model predictions
 - Health checks
 - Model information
+- Prometheus metrics for monitoring
 """
 
 import os
 import sys
+import time
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -21,6 +24,19 @@ import uvicorn
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.api.predict import PredictionService
+from src.api.metrics import (
+    get_metrics,
+    get_content_type,
+    MetricsMiddleware,
+    DriftDetector,
+    REQUEST_COUNT,
+    REQUEST_LATENCY,
+    ACTIVE_REQUESTS
+)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -105,16 +121,58 @@ class ErrorResponse(BaseModel):
     timestamp: str
 
 
+class AlertWebhookPayload(BaseModel):
+    """Payload for Grafana alert webhooks."""
+    alerts: List[Dict[str, Any]] = []
+    status: str = ""
+    commonLabels: Dict[str, str] = {}
+
+
+# Store alerts for logging
+alert_log: List[Dict] = []
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the prediction service on startup."""
     global prediction_service
     try:
         prediction_service = PredictionService()
-        print(f"✅ Model loaded: {prediction_service.model_name}")
+        logger.info(f"✅ Model loaded: {prediction_service.model_name}")
+        
+        # Set model info in metrics
+        MetricsMiddleware.set_model_info(
+            name=prediction_service.model_name,
+            model_type=type(prediction_service.model).__name__,
+            version="1.0.0"
+        )
     except Exception as e:
-        print(f"⚠️ Failed to load model: {e}")
+        logger.warning(f"⚠️ Failed to load model: {e}")
         prediction_service = None
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Middleware to track request metrics."""
+    start_time = time.time()
+    
+    ACTIVE_REQUESTS.inc()
+    
+    try:
+        response = await call_next(request)
+        status = "success" if response.status_code < 400 else "error"
+    except Exception as e:
+        status = "error"
+        raise
+    finally:
+        duration = time.time() - start_time
+        endpoint = request.url.path
+        method = request.method
+        
+        ACTIVE_REQUESTS.dec()
+        MetricsMiddleware.track_request(method, endpoint, status, duration)
+    
+    return response
 
 
 @app.get("/", response_model=Dict[str, str])
@@ -167,6 +225,7 @@ async def predict(request: PredictionRequest):
     Make a single prediction.
     
     Accepts feature values and returns the predicted price.
+    Also tracks metrics and checks for data drift.
     """
     if not prediction_service:
         raise HTTPException(
@@ -175,7 +234,18 @@ async def predict(request: PredictionRequest):
         )
     
     try:
+        # Check for data drift
+        ood_status = DriftDetector.check_features(request.features)
+        
+        # Make prediction
         prediction = prediction_service.predict(request.features)
+        
+        # Track prediction metrics
+        MetricsMiddleware.track_prediction(
+            model_name=prediction_service.model_name,
+            prediction_value=prediction
+        )
+        
         return PredictionResponse(
             prediction=prediction,
             model_name=prediction_service.model_name,
@@ -235,6 +305,105 @@ async def reload_model(background_tasks: BackgroundTasks):
             status_code=500,
             detail=f"Failed to reload model: {str(e)}"
         )
+
+
+# ============================================================================
+# PROMETHEUS METRICS ENDPOINT
+# ============================================================================
+
+@app.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics endpoint.
+    
+    Exposes all collected metrics in Prometheus format.
+    """
+    return Response(
+        content=get_metrics(),
+        media_type=get_content_type()
+    )
+
+
+# ============================================================================
+# ALERTING ENDPOINTS
+# ============================================================================
+
+@app.post("/alerts/webhook")
+async def receive_alert(payload: AlertWebhookPayload):
+    """
+    Webhook endpoint to receive Grafana alerts.
+    
+    Logs alerts to a file and stores them in memory.
+    """
+    timestamp = datetime.now().isoformat()
+    
+    alert_entry = {
+        "timestamp": timestamp,
+        "status": payload.status,
+        "labels": payload.commonLabels,
+        "alerts": payload.alerts
+    }
+    
+    # Store in memory
+    alert_log.append(alert_entry)
+    
+    # Keep only last 100 alerts
+    if len(alert_log) > 100:
+        alert_log.pop(0)
+    
+    # Log to file
+    log_dir = os.environ.get("LOG_DIR", "/app/logs")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+    
+    log_file = os.path.join(log_dir, "alerts.log")
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"{timestamp} | {payload.status} | {payload.commonLabels}\n")
+            for alert in payload.alerts:
+                f.write(f"  - {alert.get('labels', {}).get('alertname', 'unknown')}: "
+                       f"{alert.get('annotations', {}).get('summary', 'No summary')}\n")
+    except Exception as e:
+        logger.warning(f"Failed to write alert log: {e}")
+    
+    logger.info(f"🚨 Alert received: {payload.status} - {payload.commonLabels}")
+    
+    return {"status": "received", "timestamp": timestamp}
+
+
+@app.get("/alerts/history")
+async def get_alert_history():
+    """
+    Get recent alert history.
+    
+    Returns the last 100 alerts received.
+    """
+    return {
+        "alerts": alert_log,
+        "count": len(alert_log),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ============================================================================
+# DRIFT MONITORING ENDPOINTS
+# ============================================================================
+
+@app.get("/drift/status")
+async def drift_status():
+    """
+    Get current data drift status.
+    
+    Returns OOD ratios for all monitored features.
+    """
+    from src.api.metrics import DriftDetector
+    
+    return {
+        "feature_stats": DriftDetector._feature_stats,
+        "ood_counts": DriftDetector._ood_counts,
+        "total_counts": DriftDetector._total_counts,
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):

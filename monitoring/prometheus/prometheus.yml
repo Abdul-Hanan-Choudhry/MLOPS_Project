@@ -1,0 +1,51 @@
+# Prometheus Configuration for Crypto Price Prediction Monitoring
+# Scrapes metrics from the FastAPI prediction server
+
+global:
+  scrape_interval: 15s  # How frequently to scrape targets
+  evaluation_interval: 15s  # How frequently to evaluate rules
+  
+  # Attach these labels to any time series or alerts
+  external_labels:
+    monitor: 'crypto-predictor-monitor'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+          # - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "/etc/prometheus/alert_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: /metrics
+    scheme: http
+
+  # FastAPI Prediction Server
+  - job_name: 'crypto-predictor-api'
+    static_configs:
+      - targets: ['api:8000']
+    metrics_path: /metrics
+    scheme: http
+    scrape_interval: 10s  # More frequent for API metrics
+    scrape_timeout: 5s
+    
+    # Relabel configs for better metric organization
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'crypto-api'
+
+  # Optional: Node exporter for system metrics
+  # - job_name: 'node'
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
