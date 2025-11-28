@@ -283,22 +283,106 @@ pytest tests/ --cov=src --cov-report=html
 pytest tests/test_extract.py -v
 ```
 
-## 📈 Next Phases
+## 🤖 Phase 2: Model Training & MLflow (Completed)
 
-### Phase 2: Model Training & MLflow
-- Implement `src/models/train.py`
-- MLflow experiment tracking
-- Model registry on DagsHub
+### ML Models Implemented
 
-### Phase 3: CI/CD
-- GitHub Actions workflows
-- CML for automated model comparison
-- Branch protection rules
+| Model | Algorithm | Best RMSE |
+|-------|-----------|-----------|
+| Ridge Regression | Linear | ~297.88 |
+| Lasso Regression | Linear | ~297.88 |
+| ElasticNet | Linear | ~297.88 |
+| Random Forest | Ensemble | ~300+ |
+| Gradient Boosting | Ensemble | ~300+ |
+| XGBoost | Boosting | ~300+ |
+| LightGBM | Boosting | ~300+ |
 
-### Phase 4: Deployment & Monitoring
-- FastAPI prediction server
+### Training Script
+
+```bash
+# Run training locally
+python scripts/run_training_simple.py
+
+# All metrics logged to DagsHub MLflow
+# https://dagshub.com/abdulhananch404/MLOPS_Project.mlflow
+```
+
+## 🔄 Phase 3: CI/CD Pipeline (Completed)
+
+### Branching Strategy
+
+```
+feature/* ──► dev ──► test ──► master (production)
+```
+
+| Branch | Purpose | CI/CD Actions |
+|--------|---------|---------------|
+| `feature/*` | New features | None |
+| `dev` | Development integration | Linting, Unit tests, Security scan |
+| `test` | Staging environment | Model retraining, CML metrics report |
+| `master` | Production | Docker build & push to Docker Hub |
+
+### GitHub Actions Workflows
+
+1. **Feature → Dev** (`.github/workflows/ci-feature-to-dev.yml`)
+   - Code linting (black, isort, flake8, pylint)
+   - Unit tests with pytest
+   - Security scan with bandit
+
+2. **Dev → Test** (`.github/workflows/ci-dev-to-test.yml`)
+   - Full test suite
+   - Model retraining with synthetic data
+   - CML report posted to PR with metrics comparison
+
+3. **Test → Master** (`.github/workflows/cd-test-to-master.yml`)
+   - Fetch best model from MLflow
+   - Build Docker image
+   - Push to Docker Hub
+   - Deployment verification
+
+### Required GitHub Secrets
+
+```
+DAGSHUB_TOKEN    - DagsHub API token for MLflow
+DOCKER_USERNAME  - Docker Hub username
+DOCKER_PASSWORD  - Docker Hub password/token
+```
+
+### FastAPI Prediction Service
+
+```bash
+# Run locally
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+
+# API Endpoints
+GET  /health           - Health check
+POST /predict          - Single prediction
+POST /predict/batch    - Batch predictions
+GET  /model/info       - Model information
+POST /model/reload     - Reload model
+
+# Access Swagger docs
+http://localhost:8000/docs
+```
+
+### Docker Deployment
+
+```bash
+# Build image
+docker build -t crypto-price-predictor:latest .
+
+# Run container
+docker run -d -p 8000:8000 crypto-price-predictor:latest
+
+# Pull from Docker Hub (after CI/CD push)
+docker pull abdulhananch404/crypto-price-predictor:latest
+```
+
+## 📈 Phase 4: Monitoring (Next)
+
 - Prometheus metrics
 - Grafana dashboards
+- Model drift detection
 
 ## 🤝 Contributing
 
