@@ -12,11 +12,12 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 os.chdir(project_root)
 
-# Set credentials BEFORE importing mlflow
-os.environ['DAGSHUB_USERNAME'] = 'abdulhananch404'
-os.environ['DAGSHUB_TOKEN'] = '2f6456ef4e847038657172406b991bc3483f6c93'
-os.environ['MLFLOW_TRACKING_USERNAME'] = 'abdulhananch404'
-os.environ['MLFLOW_TRACKING_PASSWORD'] = '2f6456ef4e847038657172406b991bc3483f6c93'
+# Set credentials from environment or use defaults
+dagshub_token = os.environ.get('DAGSHUB_TOKEN', '2f6456ef4e847038657172406b991bc3483f6c93')
+os.environ['DAGSHUB_USERNAME'] = os.environ.get('MLFLOW_TRACKING_USERNAME', 'abdulhananch404')
+os.environ['DAGSHUB_TOKEN'] = dagshub_token
+os.environ['MLFLOW_TRACKING_USERNAME'] = os.environ.get('MLFLOW_TRACKING_USERNAME', 'abdulhananch404')
+os.environ['MLFLOW_TRACKING_PASSWORD'] = dagshub_token
 
 import mlflow
 import pandas as pd
